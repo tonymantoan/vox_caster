@@ -1,0 +1,109 @@
+
+#sidebar {
+    dock: right;
+    width: 20;
+    height: 100%;
+    color: $panel;
+    background: gray;
+    align-horizontal: center;
+    text-align: center;
+}
+
+.indicator {
+    height: 3;
+    content-align: center middle;
+    width: auto;
+    color: $primary;
+    background: $panel;
+    margin-left: 8;
+}
+
+.indicator.on {
+    background: $error;
+}
+
+#audio_switch_container {
+    margin: 1 0;
+    height: auto;
+}
+
+LoadingIndicator {
+    color: $secondary;
+    height: 3;
+}
+
+#main_body {
+    background: $background;
+    border: heavy $accent;
+}
+
+.box {
+    border: heavy $border;
+    border-title-color: $warning;
+    border-title-style: bold;
+    background: $boost;
+    color: auto;
+    margin-bottom: 1;
+
+}
+
+#spectro_container {
+    height: 5;
+}
+
+#spectrogram {
+    height: 100%;
+    background: $accent;
+}
+
+#user_input {
+    height: 10;
+}
+
+#conversation {
+    height: 1fr;
+    background: $accent;
+}
+
+#user_input_txt {
+    width: 1fr;
+}
+
+#send_button {
+    max-width: 4;
+    background: $secondary;
+    color: $primary;
+    text-style: b;
+    &:hover {
+        color: $text;
+        text-style: b;
+        color: $text;
+        background: $secondary-darken-1;
+    }
+    height: 8;
+}
+
+Switch {
+    height: auto;
+    width: auto;
+}
+
+.label {
+    height: 3;
+    content-align: center middle;
+    width: auto;
+    color: $secondary;
+}
+
+#audio_switch {
+    background: gray;
+}
+
+#audio_switch > .switch--slider {
+    background: $accent;
+}
+
+.-on {
+    color: $secondary
+}
+
