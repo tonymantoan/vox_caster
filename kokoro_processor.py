@@ -1,6 +1,6 @@
 from kokoro import KPipeline
 import sounddevice as sd
-from threading import Event
+from threading import Event, Thread
 
 class KokoroProcessor:
     def __init__(self):
@@ -53,3 +53,12 @@ class KokoroProcessor:
         self.run_generation = False
         self.generation_complete_event.set()
         self.generator.close()
+    
+if __name__ == "__main__":
+    kokoro = KokoroProcessor()
+    voice = "af_sarah"
+    text = "Done with all voice generation tasks."
+    while text != "bye":
+        text = input( "Enter text: " )
+        t = Thread( target=kokoro.generate_audio, args=(text, voice) )
+        t.start()
