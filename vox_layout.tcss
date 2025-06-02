@@ -4,27 +4,52 @@
     width: 20;
     height: 100%;
     color: $panel;
-    background: gray;
+    background: rgb(128, 128, 128);
     align-horizontal: center;
     text-align: center;
+}
+
+#sidebar-title {
+    border-bottom: dashed $accent;
+    text-align: center;
+}
+
+#audio_switch_container {
+    margin: 1 1;
+    height: auto;
+    border-bottom: solid $accent;
+}
+
+.separator{
+    width: 100%;
+    border-top: solid $accent;
+}
+
+#processing_label{
+    background: rgba(34, 139, 34, 0);
 }
 
 .indicator {
     height: 3;
     content-align: center middle;
-    width: auto;
+    width: 10;
     color: $primary;
     background: $panel;
-    margin-left: 8;
+    margin: 1 5 1 5;
 }
 
 .indicator.on {
     background: $error;
 }
 
-#audio_switch_container {
-    margin: 1 0;
-    height: auto;
+#sidebar-2 {
+
+}
+#logo {
+    height: 100%;
+    align: center bottom;
+    padding-left: 1;
+    content-align: center bottom;
 }
 
 LoadingIndicator {
@@ -48,7 +73,16 @@ LoadingIndicator {
 }
 
 #spectro_container {
-    height: 5;
+    height: 3;
+    background: $accent;
+}
+
+#spectro_container .sparkline--max-color {
+    color: $background-lighten-1
+}
+
+#spectro_container .sparkline--min-color {
+    color: $background-darken-1
 }
 
 #spectrogram {

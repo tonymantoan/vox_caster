@@ -3,6 +3,9 @@ from textual.containers import Vertical, Horizontal, Container
 from textual.widgets import Static, Button, RichLog, TextArea, Switch, LoadingIndicator
 from textual.theme import Theme
 from textual.css.query import NoMatches
+from textual.widgets import Sparkline
+from textual.color import Color
+
 from threading import Thread
 
 import traceback
@@ -25,31 +28,43 @@ guardsman_theme = Theme(
     },
 )
 
+guardsman_logo = '''
+=====  .-.  =====
+  === (0.0) ===
+   ==  |m|  ==
+
+'''
+
 
 class VoxCasterUI(App):
     CSS_PATH = "vox_layout.tcss"
 
-    def __init__( self, ui_callbacks ):
+    def __init__( self, ui_callbacks = {} ):
         super().__init__()
         self.ui_callbacks = ui_callbacks
+        self.ready = False
+        self.processing = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="sidebar"):
-            yield Static( "Sidebar" )
-            yield Static(" Rec ", classes="indicator")
-            with Horizontal(id="audio_switch_container"):
-                yield Static("Audio:  ", classes="label")
-                yield Switch(animate=True, value=True, id="audio_switch")
-            
-            yield Static(" Prcoessing...", id="processing_label")
+            with Vertical( id="sidebar-1" ):
+                yield Static( "Contols", id="sidebar-title" )
+                with Horizontal(id="audio_switch_container"):
+                    yield Static("Audio:  ", classes="label")
+                    yield Switch(animate=True, value=True, id="audio_switch")
+                yield Static(" Rec ", classes="indicator")
+                yield Static("  ", classes="separator")
+                yield Static(" Prcoessing...", id="processing_label")
+
+            with Vertical( id="sidebar-2" ):
+                yield Static(guardsman_logo, id="logo")
             
         
         with Vertical(id="main_body"):
-            with Horizontal(id="spectro_container", classes="box"):
-                yield Static("Spectrogram", id="spectrogram")
+            yield Sparkline([3,5,4], id="spectro_container", classes="box", summary_function=max)
             
             with Horizontal(id="convo_container", classes="box"):
-                yield RichLog(highlight=True, id="conversation") # markup=True
+                yield RichLog(highlight=True, id="conversation", markup=True) 
             
             with Horizontal(id="user_input", classes="box"):
                 yield TextArea("Type stuff here", id="user_input_txt")
@@ -64,7 +79,7 @@ class VoxCasterUI(App):
     
     def on_ready(self) -> None:
         text_log = self.query_one(RichLog)
-        text_log.write("[bold magenta]Conversation Goes Here!")
+        text_log.write("[bold #D4D4D4]Conversation Goes Here!")
 
         convo_container = self.query_one("#convo_container")
         convo_container.border_title = "Log"
@@ -77,6 +92,8 @@ class VoxCasterUI(App):
 
         self.query_one(TextArea).show_line_numbers = True
         self.recording_indicator_on()
+
+        self.ready = True
     
     def toggle_audio_switch( self ):
         switch = self.query_one( "#audio_switch" )
@@ -128,12 +145,26 @@ class VoxCasterUI(App):
         return text_log.text
     
     def toggle_processing_indicator( self ):
-        try:
-            traceback.print_stack()
-            indicator = self.query_one(LoadingIndicator)
-            indicator.remove()
-        except NoMatches as e:
-            self.mount( LoadingIndicator(), after="#processing_label" )
+        self.processing = not self.processing
+        fade_alpha = 1.0 if self.processing else 0.0
+        indicator = self.query_one("#processing_label")
+        fade_in_color = Color(34, 139, 34, fade_alpha)
+
+        def animate_cb():
+            nonlocal fade_in_color
+            if fade_in_color.a == 1.0:
+                fade_in_color = fade_in_color.with_alpha(0.0)
+            else:
+                fade_in_color = fade_in_color.with_alpha(1.0)
+            
+            if self.processing:
+                indicator.styles.animate( "background", value=fade_in_color, duration=2.0, on_complete=animate_cb )
+
+        indicator.styles.animate( "background", value=fade_in_color, duration=2.0, on_complete=animate_cb )
+    
+    def update_spectrogram( self, spec_data ):
+        sparkline = self.query_one(Sparkline)
+        sparkline.data = spec_data
 
 if __name__ == "__main__":
     app = VoxCasterUI()

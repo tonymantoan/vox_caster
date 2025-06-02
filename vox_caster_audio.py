@@ -20,8 +20,9 @@ import torchaudio
 # import noisereduce as nr
 
 class VoxCaster:
-    def __init__(self, ui_app: VoxCasterUI | None = None):
+    def __init__(self, ui_app: VoxCasterUI | None = None, input_handler = None):
         self.ui_app = ui_app
+        self.input_handler = input_handler
         # audio settings
         self.SAMPLE_RATE = 24000
         self.WHISPER_SAMPLE_RATE = 16000
@@ -31,6 +32,12 @@ class VoxCaster:
         self.INTERRUPTION_DURATION = 0.75
         self.INTERRUPTION_SAMPLE_SIZE = self.WHISPER_SAMPLE_RATE * self.INTERRUPTION_DURATION
         self.interruption_detection_buffer = np.zeros((1, 1))
+
+        # Spectrogram stuff
+        self.blocksize = 512
+        self.nfft = 512
+        self.window = np.hanning(self.blocksize)
+        self.spec_data = np.zeros((self.nfft // 2 + 1, 60))
 
         self.shutdown_event = Event()
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -71,9 +78,10 @@ class VoxCaster:
             "JorisCos/ConvTasNet_Libri2Mix_sepnoisy_16k")
 
     def handle_interruption_detect( self, sources ):
+        # TODO: Update this when voice detection is implemented so this can be more accurate
         for source in sources:
             print(f"Task is done with source voice: {source[0]}")
-            if source[0] != "teletran-1":
+            if source[0] != "teletran-1" and source[0] != "unknown":
                 self.kokoro.interrupt_generation()
                 break
 
@@ -95,6 +103,7 @@ class VoxCaster:
         sources = []
         for source in est_sources:
             source_volume = np.abs(source).mean()
+            print( f"ID source volume: {source_volume}")
             if source_volume < self.SILENCE_THRESHOLD:
                 print(f"Low source volume: {source_volume} ")
                 continue
@@ -142,6 +151,10 @@ class VoxCaster:
             audio_prebuffer = np.append( audio_prebuffer, audio_raw )
             if self.PRE_BUFFER_SIZE > len(audio_prebuffer):
                 return
+
+            #spectrogram
+            if self.ui_app.ready == True:
+                self.ui_app.update_spectrogram( audio_prebuffer.tolist() )
 
             # print( f"raw mean: {np.abs(audio_prebuffer).mean()}" )
             audio = self.noise_cancellation( audio_prebuffer )
@@ -196,7 +209,8 @@ class VoxCaster:
                 callback=callback,
                 channels=1,
                 samplerate=self.WHISPER_SAMPLE_RATE,
-                dtype=np.float32
+                dtype=np.float32,
+                blocksize=512
             ) as stream:
                 print("Recording... Press Ctrl+C to stop")
                 self.input_stream = stream
@@ -219,11 +233,11 @@ class VoxCaster:
     
                     print(f"Add to input: {current_speaker_name}: {text.strip()}")
                     if len( text.split(' ') ) > 2:
-                        self.ui_app.append_to_input( f"{current_speaker_name}: {text.strip()}" )
-                        # print(f"{current_speaker_name}: {text.strip()}")
-                    # else:
-                    #     print( "Restarting Stream after false positive" )
-                    #     stream.start()
+                        if self.ui_app == None:
+                            self.input_handler( f"{current_speaker_name}: {text.strip()}" )
+                        else:
+                            self.ui_app.append_to_input( f"{current_speaker_name}: {text.strip()}" )
+
         except sd.CallbackStop:
             print( "Stop input stream...." )
             pass
@@ -232,10 +246,10 @@ class VoxCaster:
         if self.input_stream:
             self.input_stream.start()
         
-        # t = Thread( target=self.kokoro.generate_audio, args=(text, voice) )
-        # t.start()
+        t = Thread( target=self.kokoro.generate_audio, args=(text, voice) )
+        t.start()
 
-        self.kokoro.generate_audio( text, voice )
+        # self.kokoro.generate_audio( text, voice )
     
     def pause_input_stream( self ):
         print( "Pausing input Stream" )
@@ -250,9 +264,9 @@ class VoxCaster:
 def main():
     def handle_input(input_text):
         app.toggle_audio_switch()
-        print("TURN INDICATOR ON")
+        app.toggle_processing_indicator()
+        # vc.generate_voice_response( input_text, "af_sarah" )
         time.sleep(2)
-        print("TURN INDICATOR OFF")
         app.toggle_audio_switch()
 
     
