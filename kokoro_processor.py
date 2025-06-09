@@ -53,6 +53,7 @@ class KokoroProcessor:
         self.run_generation = False
         self.generation_complete_event.set()
         self.generator.close()
+        self.current_frame = 0
     
 if __name__ == "__main__":
     kokoro = KokoroProcessor()
