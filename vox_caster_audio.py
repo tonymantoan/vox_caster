@@ -15,6 +15,7 @@ import sounddevice as sd
 import soundfile as sf
 import torch
 import torchaudio
+import webrtcvad
 
 # from speechbrain.inference.separation import SepformerSeparation
 # import noisereduce as nr
@@ -26,18 +27,14 @@ class VoxCaster:
         # audio settings
         self.SAMPLE_RATE = 24000
         self.WHISPER_SAMPLE_RATE = 16000
-        self.PRE_BUFFER_SIZE = 1600
-        self.SILENCE_THRESHOLD = 0.01   # default volume level that counts as silence
+        self.PRE_BUFFER_SIZE = 1920
+        self.VAD_BUFFER = 480 # 30ms
         self.SILENCE_DURATION = 1.5    # seconds of silence before cutting recording
         self.INTERRUPTION_DURATION = 0.75
         self.INTERRUPTION_SAMPLE_SIZE = self.WHISPER_SAMPLE_RATE * self.INTERRUPTION_DURATION
         self.interruption_detection_buffer = np.zeros((1, 1))
 
-        # Spectrogram stuff
-        self.blocksize = 512
-        self.nfft = 512
-        self.window = np.hanning(self.blocksize)
-        self.spec_data = np.zeros((self.nfft // 2 + 1, 60))
+        self.vad = webrtcvad.Vad( 3 )
 
         self.shutdown_event = Event()
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -51,12 +48,6 @@ class VoxCaster:
         self.input_stream = None
 
         self._init_known_voices()
-        print("TAKING AMBIENT NOISE SAMPLE, PLEASE BE QUIET.")
-        ambient_sample_size = 1.5 * self.WHISPER_SAMPLE_RATE
-        self.ambient_noise_sample = sd.rec(int(ambient_sample_size), samplerate=self.WHISPER_SAMPLE_RATE, channels=1)
-        sd.wait()
-        self.SILENCE_THRESHOLD = (np.abs(self.ambient_noise_sample).mean())
-        print(f"DONE SAMPLING AMBIENT NOISE - Volume is {self.SILENCE_THRESHOLD}")
 
     def _signal_handler(self, signum, frame):
         print("\nStopping...")
@@ -97,34 +88,43 @@ class VoxCaster:
         
         return voice_id
     
-    def id_sources( self, audio_data ):
+    def id_sources( self, audio_data, min_vad_samples ):
         est_sources = self.source_separator.separate( audio_data )
         est_sources = est_sources[0] # strip batch dimension
         sources = []
         for source in est_sources:
-            source_volume = np.abs(source).mean()
-            print( f"ID source volume: {source_volume}")
-            if source_volume < self.SILENCE_THRESHOLD:
-                print(f"Low source volume: {source_volume} ")
+            speech_detected = self.vad_for_segment( source, min_vad_samples )
+            print( f"ID source voice detected: {speech_detected}")
+            if not speech_detected:
                 continue
             
             voiceId = self.id_voice( source )
+            print( f"Voice ID for detected voice: {voiceId}" )
             sources.append( (voiceId, source) )
         print( f"Found sources: {len(sources)}" )
         return sources
+    
+    def vad_for_segment( self, audio_segment, min_vad_samples ) -> bool:
+        vad_audio_segment = (audio_segment * 32768).astype(np.int16)
+        vad_frames = np.array_split(vad_audio_segment, np.ceil(len(vad_audio_segment) / self.VAD_BUFFER))
+        voice_frame_count = 0
+
+        for vad_frame in vad_frames:
+            if self.vad.is_speech( vad_frame.tobytes(), self.WHISPER_SAMPLE_RATE ):
+                voice_frame_count += 1
+        
+        # vad_percent = voice_frame_count / len(vad_frames)
+        
+        # Check for specified amount of audio
+        # print( f"VAD check if {voice_frame_count*self.VAD_BUFFER} is >= {min_vad_samples}" )
+        if (voice_frame_count*self.VAD_BUFFER) >= min_vad_samples:
+            return True
+        else:
+            return False
 
     def check_for_interruption( self, audio_buffer ):
-        sources = self.id_sources( np.array( audio_buffer, dtype=np.float32 ) )
+        sources = self.id_sources( np.array( audio_buffer, dtype=np.float32 ), (self.PRE_BUFFER_SIZE/2) )
         self.handle_interruption_detect( sources )
-    
-    def noise_cancellation( self, audio ):
-        """Applies a simple spectral noise reduction filter."""
-        noise_reduction_factor = 0.1
-        level = np.abs(audio).mean()
-        # print(f"MEan noise level: {level}")
-        noise_threshold = level * noise_reduction_factor
-        denoised_audio = np.where(audio > noise_threshold, audio, 0)
-        return denoised_audio
 
     def record_and_transcribe(self):
         # state for audio recording
@@ -153,11 +153,10 @@ class VoxCaster:
                 return
 
             #spectrogram
-            if self.ui_app.ready == True:
-                self.ui_app.update_spectrogram( audio_prebuffer.tolist() )
+            # if self.ui_app.ready == True:
+            #     self.ui_app.update_spectrogram( audio_prebuffer.tolist() )
 
-            # print( f"raw mean: {np.abs(audio_prebuffer).mean()}" )
-            audio = self.noise_cancellation( audio_prebuffer )
+            audio = audio_prebuffer.copy()
             # audio = audio_prebuffer.copy()
             audio_prebuffer = np.array([])
 
@@ -174,12 +173,9 @@ class VoxCaster:
                     audio_buffer = np.array([])
                     return
 
-            level = np.abs(audio).mean()
-            # print( f"Audio Level {level}, silence thres: {self.SILENCE_THRESHOLD}" )
-
-
             # track silence duration
-            if level < self.SILENCE_THRESHOLD:
+            speech_detected = self.vad_for_segment( audio, self.PRE_BUFFER_SIZE)
+            if not speech_detected:
                 silence_frames += len(audio)
             else:
                 silence_frames = 0
@@ -210,7 +206,7 @@ class VoxCaster:
                 channels=1,
                 samplerate=self.WHISPER_SAMPLE_RATE,
                 dtype=np.float32,
-                blocksize=512
+                blocksize=480
             ) as stream:
                 print("Recording... Press Ctrl+C to stop")
                 self.input_stream = stream
@@ -220,23 +216,26 @@ class VoxCaster:
                     # stream.stop()
                     input_ready_event.clear()
                     # nr_audio = nr.reduce_noise(y=audio_segment, y_noise=self.ambient_noise_sample, sr=self.WHISPER_SAMPLE_RATE)
-                    nr_audio = audio_segment
-                    audio_volume = np.abs(nr_audio).mean()
+                    source_audio = audio_segment.reshape( 1,1, audio_segment.shape[0] )
+                    source_audio = np.array( source_audio, dtype=np.float32 )
 
-                    if current_speaker_name == "unknown" and audio_volume < 0.003:
+                    # Only include audio if the source is known, or if there is 1 sec confirmed voice activity:
+                    name_source_map = self.id_sources( source_audio, self.WHISPER_SAMPLE_RATE )
+                    if len( name_source_map ) == 0:
                         stream.start()
                         continue
                     
-                    text = ""
-                    if audio_volume != float('nan'):
-                        text = self.whisper_mlx.transcribe(nr_audio)['text'].strip()
-    
-                    print(f"Add to input: {current_speaker_name}: {text.strip()}")
-                    if len( text.split(' ') ) > 2:
-                        if self.ui_app == None:
-                            self.input_handler( f"{current_speaker_name}: {text.strip()}" )
-                        else:
-                            self.ui_app.append_to_input( f"{current_speaker_name}: {text.strip()}" )
+                    for name, source in name_source_map:
+                        text = ""
+                        # if audio_volume != float('nan'):
+                        text = self.whisper_mlx.transcribe(source)['text'].strip()
+        
+                        print(f"Add to input: {name}: {text.strip()}")
+                        if len( text.split(' ') ) > 2:
+                            if self.ui_app == None:
+                                self.input_handler( f"{name}: {text.strip()}" )
+                            else:
+                                self.ui_app.append_to_input( f"{name}: {text.strip()}" )
 
         except sd.CallbackStop:
             print( "Stop input stream...." )
@@ -268,6 +267,10 @@ def main():
         # vc.generate_voice_response( input_text, "af_sarah" )
         time.sleep(2)
         app.toggle_audio_switch()
+        app.toggle_processing_indicator()
+    
+    def handle_input_print(input_text):
+        print(f"Input recieved: {input_text}")
 
     
     def handle_audio_switch( switch_state ):
@@ -283,12 +286,12 @@ def main():
     }
 
     app = VoxCasterUI( ui_callbacks=my_ui_callbacks )
-    vc = VoxCaster( app )
+    vc = VoxCaster( input_handler=handle_input_print )
    
     t = Thread( target=vc.record_and_transcribe )
     try:
         t.start()
-        app.run()
+        # app.run()
         # t.join()
     except KeyboardInterrupt:
         sys.exit('\nExit by user')
