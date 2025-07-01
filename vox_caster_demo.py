@@ -73,6 +73,7 @@ class LocalAiClient():
     def handle_input( self, input_text ):
         self.vc_ui.toggle_audio_switch()
         user_message = Message( 'user', input_text )
+        self.vc_ui.toggle_processing_indicator()
 
         # self.vc_ui.toggle_processing_indicator()
 
@@ -80,6 +81,7 @@ class LocalAiClient():
         def call_llm():
             llm_response = self.generate_response( [SYS_MESSAGE, user_message] )
             self.handle_llm_response( llm_response )
+            self.vc_ui.toggle_processing_indicator()
         
         llm_thread = Thread(target=call_llm)
         llm_thread.start()

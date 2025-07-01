@@ -1,6 +1,8 @@
 from kokoro import KPipeline
 import sounddevice as sd
 from threading import Event, Thread
+import librosa
+import numpy as np
 
 class KokoroProcessor:
     def __init__(self):
@@ -9,6 +11,7 @@ class KokoroProcessor:
         self.demo_text = "Hello, friends. I am Teletran-1! Nice to meet you. I am a helpful assistant who can answer questions and do some tasks."
         self.current_frame = 0
         self.run_generation = False
+        self.audio_ready_for_playback = False
         # self.output_runtime = 0
     
     def audio_output_callback( self, outdata, frames, time, status ):
@@ -31,26 +34,27 @@ class KokoroProcessor:
         )
 
         for i, (gs, ps, audio) in enumerate(self.generator):
+            self.audio_ready_for_playback = False
             if not self.run_generation:
                 break
             
+            self.current_frame = 0
             print(i)  # i => index
             print(gs) # gs => graphemes/text
-            self.audio_data = audio
+            self.audio_data = librosa.resample( np.array(audio), orig_sr=self.DEFAULT_FREQUENCY, target_sr=16000 )
+            print("Kokoro audio ready for playback")
+            self.audio_ready_for_playback = True
             self.generation_complete_event = Event()
-            out_stream = sd.OutputStream(
-                samplerate=self.DEFAULT_FREQUENCY, callback=self.audio_output_callback, finished_callback=self.generation_complete_event.set, channels=1)
-
-            with out_stream:
-                self.generation_complete_event.wait()
-                out_stream.close()
-                print("ALL DONE")
+            self.generation_complete_event.wait()
+            print("Kokoro done with current audio generation")
         
         print( "Done with all voice generation tasks" )
         self.run_generation = False
+        self.audio_ready_for_playback = False
     
     def interrupt_generation( self ):
         self.run_generation = False
+        self.audio_ready_for_playback = False
         self.generation_complete_event.set()
         self.generator.close()
         self.current_frame = 0

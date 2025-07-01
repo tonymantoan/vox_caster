@@ -16,6 +16,7 @@ import soundfile as sf
 import torch
 import torchaudio
 import webrtcvad
+# from pyaec import Aec
 
 # from speechbrain.inference.separation import SepformerSeparation
 # import noisereduce as nr
@@ -29,12 +30,15 @@ class VoxCaster:
         self.WHISPER_SAMPLE_RATE = 16000
         self.PRE_BUFFER_SIZE = 1920
         self.VAD_BUFFER = 480 # 30ms
+        self.AEC_FILTER_LENGTH = (self.VAD_BUFFER*10) # int(self.WHISPER_SAMPLE_RATE * 0.4) # 0.4s
         self.SILENCE_DURATION = 1.5    # seconds of silence before cutting recording
         self.INTERRUPTION_DURATION = 0.75
         self.INTERRUPTION_SAMPLE_SIZE = self.WHISPER_SAMPLE_RATE * self.INTERRUPTION_DURATION
-        self.interruption_detection_buffer = np.zeros((1, 1))
+        self.interruption_detection_buffer = np.array([]) # np.zeros((1, 1))
+        self.latest_voice_output = np.array([])
 
         self.vad = webrtcvad.Vad( 3 )
+        # self.aec = Aec(self.VAD_BUFFER*2, self.AEC_FILTER_LENGTH, self.WHISPER_SAMPLE_RATE, True)
 
         self.shutdown_event = Event()
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -71,7 +75,7 @@ class VoxCaster:
     def handle_interruption_detect( self, sources ):
         # TODO: Update this when voice detection is implemented so this can be more accurate
         for source in sources:
-            print(f"Task is done with source voice: {source[0]}")
+            print(f"Interrupt detection task is done with source voice: {source[0]}")
             if source[0] != "teletran-1" and source[0] != "unknown":
                 self.kokoro.interrupt_generation()
                 break
@@ -110,8 +114,11 @@ class VoxCaster:
         voice_frame_count = 0
 
         for vad_frame in vad_frames:
-            if self.vad.is_speech( vad_frame.tobytes(), self.WHISPER_SAMPLE_RATE ):
-                voice_frame_count += 1
+            try:
+                if self.vad.is_speech( vad_frame.tobytes(), self.WHISPER_SAMPLE_RATE ):
+                    voice_frame_count += 1
+            except:
+                print(f"Error during vad, seg size: {len(vad_audio_segment)}, frame calc: {np.ceil(len(vad_audio_segment) / self.VAD_BUFFER)}, frame size: {len(vad_frame)} ")
         
         # vad_percent = voice_frame_count / len(vad_frames)
         
@@ -137,7 +144,7 @@ class VoxCaster:
         current_speaker_name = 'unknown'
         # chunk_size = int(self.SAMPLE_RATE * 50 / 1000)
 
-        def callback(indata, frames, time_info, status):
+        def callback(indata, outdata, frames, time_info, status):
             # callback function that processes incoming audio frames
             if self.shutdown_event.is_set():
                 raise sd.CallbackStop()
@@ -147,14 +154,43 @@ class VoxCaster:
             if status:
                 print(status)
 
+            # cancel speaker output from the input
+            # TODO: pyaec is not working, try again later
+            # if len(self.latest_voice_output) == frames:
+            #     audio_in_buffer = np.frombuffer(indata.flatten(), dtype="int16")
+            #     audio_out_buffer = np.frombuffer(self.latest_voice_output.flatten(), dtype="int16")
+            #     print( f"frames: {frames}, shape input buffer: {audio_in_buffer.shape}, ouput buffer: {self.latest_voice_output.shape}, length: {len(audio_in_buffer)}" )
+            #     audio_raw = self.aec.cancel_echo(audio_in_buffer, audio_out_buffer)
+
+            #     # audio_raw = np.subtract(indata, self.latest_voice_output)
+            #     # audio_raw = audio_raw.flatten()
+
+            #     self.latest_voice_output = np.array([])
+            # else:
+            #     audio_raw = indata.flatten()
+            
+            if self.kokoro.audio_ready_for_playback:
+                # print(f"RUN VOICE GEN FOR {frames} FRAMES")
+                chunksize = min(len(self.kokoro.audio_data) - self.kokoro.current_frame, frames)
+                # print(f"RUN VOICE GEN FOR DATA SHAPE: {self.kokoro.audio_data.shape}")
+                self.latest_voice_output = self.kokoro.audio_data[self.kokoro.current_frame:self.kokoro.current_frame + chunksize].reshape(-1, 1)
+                outdata[:chunksize] = self.latest_voice_output
+                if chunksize < frames:
+                    outdata[chunksize:] = 0
+                    self.kokoro.current_frame = 0
+                    self.kokoro.generation_complete_event.set()
+                self.kokoro.current_frame += chunksize
+            else:
+                outdata.fill(0)
+
             audio_raw = indata.flatten()
             audio_prebuffer = np.append( audio_prebuffer, audio_raw )
             if self.PRE_BUFFER_SIZE > len(audio_prebuffer):
                 return
 
             #spectrogram
-            # if self.ui_app.ready == True:
-            #     self.ui_app.update_spectrogram( audio_prebuffer.tolist() )
+            if self.ui_app.ready == True:
+                self.ui_app.update_spectrogram( audio_prebuffer.tolist() )
 
             audio = audio_prebuffer.copy()
             # audio = audio_prebuffer.copy()
@@ -164,9 +200,10 @@ class VoxCaster:
             # nr.reduce_noise(y=audio, sr=self.WHISPER_SAMPLE_RATE)
 
             if self.kokoro.run_generation:
-                self.interruption_detection_buffer = np.append( self.interruption_detection_buffer, indata )
+                # interrupt detection stuff
+                self.interruption_detection_buffer = np.append( self.interruption_detection_buffer, audio )
                 if len( self.interruption_detection_buffer ) > self.INTERRUPTION_SAMPLE_SIZE:
-                    self.interruption_detection_buffer = self.interruption_detection_buffer.reshape( 1,1, self.interruption_detection_buffer.shape[0])
+                    self.interruption_detection_buffer = self.interruption_detection_buffer.reshape( -1,1, self.interruption_detection_buffer.shape[0])
                     t = Thread( target=self.check_for_interruption, args=(self.interruption_detection_buffer.copy()) )
                     t.start()
                     self.interruption_detection_buffer = np.array([])
@@ -201,7 +238,7 @@ class VoxCaster:
 
         # start recording loop
         try:
-            with sd.InputStream(
+            with sd.Stream(
                 callback=callback,
                 channels=1,
                 samplerate=self.WHISPER_SAMPLE_RATE,
@@ -216,7 +253,8 @@ class VoxCaster:
                     # stream.stop()
                     input_ready_event.clear()
                     # nr_audio = nr.reduce_noise(y=audio_segment, y_noise=self.ambient_noise_sample, sr=self.WHISPER_SAMPLE_RATE)
-                    source_audio = audio_segment.reshape( 1,1, audio_segment.shape[0] )
+                    print(f"Audio segment shape: {audio_segment.shape}")
+                    source_audio = audio_segment.reshape( 1, -1 )
                     source_audio = np.array( source_audio, dtype=np.float32 )
 
                     # Only include audio if the source is known, or if there is 1 sec confirmed voice activity:
@@ -291,7 +329,7 @@ def main():
     t = Thread( target=vc.record_and_transcribe )
     try:
         t.start()
-        # app.run()
+        app.run()
         # t.join()
     except KeyboardInterrupt:
         sys.exit('\nExit by user')
